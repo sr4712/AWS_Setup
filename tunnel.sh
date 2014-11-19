@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Start/stop an EC2 instance for use as an ssh tunnel
+# Start/stop an EC2 instance to use as a ssh tunnel
 # requires the aws package locally -- sudo apt-get install awscli
 #
 # usage: ./tunnel.sh start (spin up EC2 and create the tunnel)
