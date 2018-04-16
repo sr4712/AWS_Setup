@@ -1,102 +1,161 @@
 #!/bin/bash
-
-# Start/stop an EC2 instance to use as a ssh tunnel
-# requires the aws package locally -- sudo apt-get install awscli
 #
-# usage: ./tunnel.sh start (spin up EC2 and create the tunnel)
-#        ./tunnel.sh stop (terminate the EC2 instance to save money)
-#        ./tunnel.sh resume (in case your tunnel is interrupted but the EC2 instance is still running)
+# Start/stop an EC2 instance to use as a ssh tunnel and sets up server for NLP tasks
+# requires the aws package locally -- sudo apt-get install awscli
 
-# CHANGE THE PARAMETERS BELOW
+set -o nounset
+set -o errexit
 
-imageid="ami-37501207" # this is an Ubuntu AMI, but you can change it to whatever you want
-instance_type="t1.micro"
-key_name="myawskeypairname" # your keypair name -- http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html
-security_group="my-security-group" # your security group -- http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-network-security.html
-wait_seconds="5" # seconds between polls for the public IP to populate (keeps it from hammering their API)
-port="5222" # the SSH tunnel port you want
-key_location="/home/aws/keypair.pem" # your private key -- http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html#having-ec2-create-your-key-pair
-user="ubuntu" # the EC2 linux user name
+readonly IMAGE_ID="ami-cb67a4b2"
+readonly INSTANCE_TYPE="p2.xlarge"
+readonly KEY_NAME="aws-key-fast-ai"
+readonly KEY_LOCATION="/home/aws/keypair.pem"
+readonly USER="ec2-user"
 
-# END SETTINGS
 
-# --------------------- you shouldn't have to change much below this ---------------------
-
-# private
-connect ()
+connect()
 {
-	ssh -oStrictHostKeyChecking=no -ND $port -i $key_location $user@$ip
+  getip
+  echo "Waiting "$1" seconds"
+  sleep "$1"
+  echo "SSH tunnelling ..."
+  ssh -i "$KEY_LOCATION" "$USER"@"$ip"
 }
 
-# private
-getip ()
+
+getip()
 {
-	ip=$(aws ec2 describe-instances | grep PublicIpAddress | grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}")
+  ip="$(aws ec2 describe-instances --query "Reservations[*].Instances[*].PublicIpAddress" --output=text)"
+  echo "$ip"
 }
 
-# public
-start ()
+
+wait_for_ip()
 {
-	echo "Starting instance..."
-	aws ec2 run-instances --image-id $imageid --count 1 --instance-type $instance_type --key-name $key_name --security-groups $security_group > /dev/null 2>&1
-
-	# wait for a public ip
-	while true; do
-
-		echo "Waiting $wait_seconds seconds for IP..."
-		sleep $wait_seconds
-		getip
-		if [ ! -z "$ip" ]; then
-			break
-		else
-			echo "Not found yet. Waiting for $wait_seconds more seconds."
-			sleep $wait_seconds
-		fi
-
-	done
-
-	echo "Found IP $ip - Starting tunnel on port $port"
-
-	connect
+  while true; do
+    echo "Waiting "$1" seconds"
+    sleep "$1"
+    getip
+    if [[ ! -z "$ip" ]]; then
+      break
+    else
+      echo "Not found yet. Waiting for "$1" more seconds."
+      sleep "$1"
+    fi
+  done
 }
 
-# public
-stop ()
-{
-	instance=$(aws ec2 describe-instances | grep InstanceId | grep -E -o "i\-[0-9A-Za-z]+")
 
-	aws ec2 terminate-instances --instance-ids $instance
+start()
+{
+  echo "Starting instance..."
+  aws ec2 run-instances --image-id $IMAGE_ID --count 1 --instance-type $INSTANCE_TYPE --key-name $KEY_NAME > /dev/null 2>&1
+  wait_for_ip 5
+  echo "Found IP - Start SSH Tunnelling"
+
+  connect 10
+  if [[ $? -ne 0 ]]; then
+    echo "SSH Port Forwarding Unsuccessful" >&2
+  fi
 }
 
-# public
-resume ()
-{
-	getip
 
-	connect
+stop()
+{
+  instance="$(aws ec2 describe-instances --query "Reservations[*].Instances[*].InstanceId" --output=text)"
+  aws ec2 terminate-instances --instance-ids $instance
 }
 
-# public
-instruct ()
+
+send_file_to_server()
 {
-	echo "Please provide an argument: start, stop, resume"
+  getip
+  scp -i "$KEY_LOCATION" "$1"  "$USER"@"$ip":/home/ec2-user
+}
+
+upgrade_keras_on_server()
+{
+  getip
+  ssh -i "$KEY_LOCATION" "$USER"@"$ip" "sudo pip install --upgrade keras==2.0.6"
+}
+
+
+python_setuptools_on_server()
+{
+  getip
+  ssh -i "$KEY_LOCATION" "$USER"@"$ip" "sudo yum install python-setuptools"
+}
+
+
+python_install_library_on_server()
+{
+  getip
+  ssh -i "$KEY_LOCATION" "$USER"@"$ip" "sudo easy_install "$1""
+}
+
+
+get_glove_embeddings()
+{
+  getip
+  ssh -i "$KEY_LOCATION" "$USER"@"$ip" "wget  "http://nlp.stanford.edu/data/glove.6B.zip" &&\
+                                        unzip glove.6B.zip && mkdir glove_embeddings &&\
+                                        mv *.txt ./glove_embeddings "
+}
+
+
+instruct()
+{
+  echo "Please provide an argument: start, stop, resume, connect,
+        get_glove_embeddings, python_setuptools_on_server,
+        python_install_library_on_server,upgrade_keras_on_server,
+        send_file_to_server"
 }
 
 
 #-------------------------------------------------------
 
+
 # "main"
 case "$1" in
-	start)
-		start
-		;;
-	resume)
-		resume
-		;;
-	stop)
-		stop
-		;;
-	help|*)
-		instruct
-		;;
+  start)
+    start
+    shift
+    ;;
+  connect)
+    connect $2
+    shift
+    ;;
+  getip)
+    getip
+    shift
+    ;;
+  python_setuptools_on_server)
+    python_setuptools_on_server
+    shift
+    ;;
+  python_install_library_on_server)
+    python_install_library_on_server $2
+    shift
+    ;;
+  send_file_to_server)
+    send_file_to_server $2
+    shift
+    ;;
+  stop)
+    stop
+    shift
+    ;;
+  upgrade_keras_on_server)
+    upgrade_keras_on_server
+    shift
+    ;;
+  get_glove_embeddings)
+    get_glove_embeddings
+    shift
+    ;;
+  help|*)
+    instruct
+    shift
+    ;;
 esac
+shift
